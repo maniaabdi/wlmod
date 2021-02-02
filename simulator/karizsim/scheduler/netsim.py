@@ -12,6 +12,38 @@ from simpy.resources import base
 from heapq import heappush, heappop
 
 
+class Request(object):
+    """ A very simple class that represents a packet.
+        This packet will run through a queue at a switch output port.
+        We use a float to represent the size of the packet in bytes so that
+        we can compare to ideal M/M/1 queues.
+
+        Parameters
+        ----------
+        time : float
+            the time the packet arrives at the output queue.
+        size : float
+            the size of the packet in bytes
+        id : int
+            an identifier for the packet
+        src, dst : int
+            identifiers for source and destination
+        flow_id : int
+            small integer that can be used to identify a flow
+    """
+    def __init__(self, time, objid, size, reqid, src=None, dst=None, flow_id=None):
+        self.time = time
+        self.size = size
+        self.id = objid
+        self.src = src
+        self.dst = dst
+        self.reqid = reqid
+        self.flow_id = flow_id
+
+    def __repr__(self):
+        return "id: {}, src: {}, time: {}, size: {}".\
+            format(self.id, self.src, self.time, self.size)
+
 class Packet(object):
     """ A very simple class that represents a packet.
         This packet will run through a queue at a switch output port.
@@ -42,6 +74,7 @@ class Packet(object):
     def __repr__(self):
         return "id: {}, src: {}, time: {}, size: {}".\
             format(self.id, self.src, self.time, self.size)
+
 
 
 class PacketGenerator(object):
@@ -137,6 +170,67 @@ class PacketSink(object):
             self.bytes_rec += pkt.size
             if self.debug:
                 print(pkt)
+
+
+class NetworkInterface(object):
+    """ Models a switch output port with a given rate and buffer size limit in bytes.
+        Set the "out" member variable to the entity to receive the packet.
+
+        Parameters
+        ----------
+        env : simpy.Environment
+            the simulation environment
+        rate : float
+            the bit rate of the port
+        qlimit : integer (or None)
+            a buffer size limit in bytes or packets for the queue (including items
+            in service).
+        limit_bytes : If true, the queue limit will be based on bytes if false the
+            queue limit will be based on packets.
+        packet_size:
+            size of packet in byte, default is 1024 bytes
+
+    """
+    def __init__(self, env, name, ip, rate, packet_size=1024, debug=False):
+        self.out_store = simpy.Store(env)
+        self.rate = rate
+        self.env = env
+        self.name = name
+        self.ip = ip
+        self.out = None
+        self.packets_rec = 0
+        self.packets_drop = 0
+        self.packet_size = packet_size
+        self.debug = debug
+        self.busy = 0  # Used to track if a packet is currently being sent
+        self.send_action = env.process(self.sender())  # starts the run() method as a SimPy process
+        self.recv_action = env.process(self.reciever())  # starts the run() method as a SimPy process
+
+    def receiver(self):
+        while True:
+            msg = (yield self.in_store.get()) 
+
+
+    def sender(self):
+        while True:
+            msg = (yield self.out_store.get()) 
+            self.busy = 1
+            self.byte_size -= msg.size
+            yield self.env.timeout(msg.size*8.0/self.rate)
+            self.out.put(msg)
+            self.busy = 0
+            if self.debug:
+                print(msg)
+
+    def put(self, req):
+        packets_count = math.ceil(req.size/self.packet_size) or 1
+        for i in range(packets_count):
+            packet_size = self.packet_size if req.size > (i + 1)*self.packet_size else req.size - i*self.packet_size
+            pkt = Packet(src=self.ip, dst=req.dest, flow_id=req.flow_id, seq_no=i, last_seq=packets_count - 1, size=packet_size)
+            self.packets_rec += 1
+            tmp_byte_count = self.byte_size + pkt.size
+            return self.out_store.put(pkt)
+    
 
 
 class SwitchPort(object):

@@ -2,19 +2,20 @@
 
 
 from SparkJob import Job
-from SimComponents import PacketGenerator, PacketSink, SwitchPort, Router
+from netsim import PacketGenerator, PacketSink, SwitchPort, Router, Request
+import yaml
+import json
+import simpy
 
-
-class Executor:
-    def __init__(self, env, host, wid):
+class Executor(object):
+    def __init__(self, env, host, flow_id):
         self.env = env
-        self.task_queue = simpy.Store(env, capacity=2)
+        self.flow_id = flow_id
+        self.out_port = None
+        self.in_port = PacketSink(env, debug=False, rec_arrivals=True)
+        
+        self.task_queue = simpy.Store(env)
         executor = env.process(self.run())
-
-        self.id = wid
-        self.host = host
-        self.pg = PacketGenerator(env, "SJSU", const_arrival, const_size, initial_delay=0.0, finish=35, flow_id=0)
-        self.ps = PacketSink(env, debug=False, rec_arrivals=True, selector=selector)
         pass
         
 
@@ -37,6 +38,8 @@ class Executor:
     def execute(self, task):
         print(f'Worker {self.wid} reads data for {task.id} at {env.now}')
         # read data
+        self.out_port.put(Request(time=self.env.now, id=task.input.name, size=task.input.size, reqid= self.request_id, flow_id=self.flow_id))
+        #FIXME I should wait for data retrieval event
         yield env.timeout(5) # need 5 minutes to fuel the tank
 
         #process data
@@ -54,11 +57,11 @@ class Executor:
 
 
 class Worker:
-    def __init__(self, env, name, n_executors):
+    def __init__(self, env, name, ip, executors, gateway=None):
         self.hostname = name
         self.env = env;
-        self.n_executors = n_executor;
-        self.workers = [Executor(env, hostname, i) for i in range(n_workers)]
+        self.n_exec = executors
+        self.executors = [Executor(env, name, i) for i in range(executors)]
         self.cur_exec = 0
         
         self.nic = WFQServer(env, source_rate, [0.5*phi_base, 0.5*phi_base])
@@ -84,17 +87,32 @@ class Storage:
 
 
 class Cluster:
-    def __init__(self, env, n_workers, n_executors):
+    def __init__(self, env, topology):
         self.env = env
-        self.n_workers = n_workers
-        self.workers = [Worker(env, f'w{i}', n_executors) for i in range(self.n_workers)]
+        self.workers = {}
+        self.routers = {}
+        self.deploy_cluster(env, topology)
 
-        self.switch_port = WFQServer(env, source_rate, [0.5*phi_base, 0.5*phi_base])
-        for w in self.workers:
-            w.nic.out = self.switch_port
+    def deploy_cluster(self, env, fpath):
+        try:
+            data = yaml.load(open(fpath, 'r'), Loader=yaml.FullLoader)
+            topology = data['topology']
+            ''' Add nodes '''
+            for name in topology:
+                node = topology[name]
+                name = node['name']
+                if node['type'] == 'worker':
+                    worker = Worker(env = env, name=name, ip=node['ip'], executors=node['executors'], gateway=node['gateway'])
+                    self.workers[name] = worker
+                elif node['type'] == 'router':
+                    router = Router(env=env, name=name, ip=node['ip'], ports=node['ports'])
+                    self.routers[name] = router
 
 
-        
+
+                print(name)
+        except:
+            raise  
 
 
 

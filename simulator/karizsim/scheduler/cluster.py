@@ -2,14 +2,16 @@
 
 
 from SparkJob import Job
-from netsim import PacketGenerator, PacketSink, SwitchPort, Router, Request
+from netsim import PacketGenerator, PacketSink, SwitchPort, Router, Request, NetworkInterface
 import yaml
 import json
 import simpy
+import itertools
 
 class Executor(object):
     def __init__(self, env, host, flow_id):
         self.env = env
+        self.host = host
         self.flow_id = flow_id
         self.out_port = None
         self.in_port = PacketSink(env, debug=False, rec_arrivals=True)
@@ -19,28 +21,26 @@ class Executor(object):
         pass
         
 
-    def submit_task(self, task):
+    def submit(self, task):
+        print(f'Submit task {task} to executor {self.flow_id}, worker {self.host} at {self.env.now}')
         yield self.task_queue.put(task)
-        print(f'Submit task {job} at', self.env.now)
-        pass
 
 
     def run(self):
         while True:
             yield self.env.timeout(1)
-            print('requesting job at', self.env.now)
-            task = yield self.store.get()
-            print(f' scheduler got {task} at {self.env.now}')
-            execute_proc = env.process(self.execute(task))
-        pass
+            task = yield self.task_queue.get()
+            print(f'Executor {self.flow_id} at worker {self.host} lunches task {task} at {self.env.now}')
+            execute_proc = self.env.process(self.execute(task))
 
 
     def execute(self, task):
-        print(f'Worker {self.wid} reads data for {task.id} at {env.now}')
+        print(f'Worker {self.flow_id} reads data for {task.id} at {self.env.now}')
         # read data
-        self.out_port.put(Request(time=self.env.now, id=task.input.name, size=task.input.size, reqid= self.request_id, flow_id=self.flow_id))
-        #FIXME I should wait for data retrieval event
-        yield env.timeout(5) # need 5 minutes to fuel the tank
+        read_events = []
+        for obj in task.inputs:
+            read_evets.append(self.out_port.put(Request(time=self.env.now, id=task.input.name, size=task.input.size, reqid= self.request_id, flow_id=self.flow_id)))    
+        yield simpy.events.AllOf(read_events) # need 5 minutes to fuel the tank
 
         #process data
         print(f'Worker {self.wid} process data for {task.id} at {env.now}')
@@ -57,25 +57,21 @@ class Executor(object):
 
 
 class Worker:
-    def __init__(self, env, name, ip, executors, gateway=None):
+    def __init__(self, env, name, ip, rate, executors, gateway=None):
         self.hostname = name
         self.env = env;
         self.n_exec = executors
-        self.executors = [Executor(env, name, i) for i in range(executors)]
-        self.cur_exec = 0
-        
-        self.nic = WFQServer(env, source_rate, [0.5*phi_base, 0.5*phi_base])
-
-        for e in self.workers:
-            e.pg.out = self.nic
-
+        self.nic = NetworkInterface(env, name=name, ip=ip, rate=rate, flows=executors, gateway=gateway)
+        self.executors = {}
+        for i in range(executors):
+            self.executors[i] = Executor(env, host=name, flow_id=i)
+            self.nic.out_ports[i] = self.executors[i].in_port
+        self.exec_it = itertools.cycle(self.executors.keys()) 
         pass
 
 
     def submit_task(self, task):
-        self.workers[self.cur_exec].submit(task)
-        self.cur_exec = (self.cur_exec + 1)%self.n_executors
-        pass
+        self.env.process(self.executors[next(self.exec_it)].submit(task))
 
 
 class Storage:
@@ -84,6 +80,10 @@ class Storage:
         self.task_queue = simpy.Store(env, capacity=2)
         executor = env.process(self.run())
 
+    def run(self):
+        while True:
+            task = yield self.task_queue.get()
+
 
 
 class Cluster:
@@ -91,6 +91,7 @@ class Cluster:
         self.env = env
         self.workers = {}
         self.routers = {}
+        self.storages = {}
         self.deploy_cluster(env, topology)
 
     def deploy_cluster(self, env, fpath):
@@ -102,19 +103,36 @@ class Cluster:
                 node = topology[name]
                 name = node['name']
                 if node['type'] == 'worker':
-                    worker = Worker(env = env, name=name, ip=node['ip'], executors=node['executors'], gateway=node['gateway'])
+                    worker = Worker(env = env, name=name, ip=node['ip'], rate=node['rate'], executors=node['executors'], gateway=node['gateway'])
                     self.workers[name] = worker
                 elif node['type'] == 'router':
-                    router = Router(env=env, name=name, ip=node['ip'], ports=node['ports'])
+                    router = Router(env=env, name=name, ip=node['ip'], ports=node['ports'], gateway=node['gateway'])
                     self.routers[name] = router
+                elif node['type'] == 'storage':
+                    storage = Storage(env)
+                    self.storages[name] = storage
 
-
-
-                print(name)
+            ''' connect nodes '''
+            for name in self.workers:
+                gateway = self.workers[name].nic.gateway
+                self.workers[name].nic.out = self.routers[gateway]
+                self.routers[gateway].connect(self.workers[name].nic)
+            for name in self.routers:
+                router = self.routers[name]
+                if router.gateway == 'None':
+                    continue
+                gateway = self.routers[self.routers[name].gateway]
+                gateway.connect(router)
+                router.connect(gateway, gateway=True)
+                gateway.add_route(router.ip)
         except:
             raise  
 
+    def worker_count(self):
+        return len(self.workers)
 
+    def get_workers(self):
+        return self.workers.keys()
 
     def submit_task(self, wid, task):
         self.workers[wid].submit_task(task)

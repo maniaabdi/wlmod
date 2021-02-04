@@ -1,58 +1,47 @@
 #!/usr/bin/python3
 
 import simpy
+import itertools
 
-from netsim import PacketGenerator, PacketSink, FlowDemux, SnoopSplitter, WFQServer
-
-class Scheduler:
-    def __init__(self, env, sched_queue, cluster):
+class Scheduler(object):
+    def __init__(self, env, cluster):
         self.env = env
-        self.store = sched_queue
+        self.job_queue = simpy.Store(env)
         self.cluster = cluster
         env.process(self.schedule())
 
-        self.n_executors = 3
-        self.n_workers = 2
-        self.workers = [simpy.Resource(env, capacity=self.n_executors) for s in range(self.n_workers)]
-        self.prev_worker = 0
+        self.workers_it = itertools.cycle(cluster.get_workers())
         pass
+
+
+    def put(self, job):
+        return self.job_queue.put(job)
+
 
     def schedule(self):
         while True:
             yield self.env.timeout(1)
-            print('requesting job at', self.env.now)
-            job = yield self.store.get()
-            print(f' scheduler got {job} at {self.env.now}')
-            execute_proc = env.process(self.admit(job))
+            print(f'Scheduler waiting for job at {self.env.now}')
+            job = yield self.job_queue.get()
+            print(f'Scheduler got {job} at {self.env.now}')
+            execute_proc = self.env.process(self.admit(job))
         pass
     
     def admit(self, job):
-        tasks = job.get_ready_stages()
+        tasks = job.get_ready_tasks()
+        completions = []
         for t in tasks:
             w = self.decide_worker()
-            self.cluster.add_task(w, t)
-            exec_proc = env.process(s.exeucte())
+            self.cluster.submit_task(w, t)
+            completions.append(t.completion_event)
         
         # barrier waits 
-        AllOf(env, events)
+        yield simpy.events.AllOf(self.env, completions)
 
 
-
-    def decide_worker(self, env):
+    def decide_worker(self):
         # lets do the round robin for now
-        w = (self.prev_worker + 1)%self.n_workers
-        self.prev_worker = w
+        w = next(self.workers_it)
         return w
 
-    def execute(self, execute):
-        print(f'Car {self.prev_worker} starts refueling at {env.now}')
-        # read data 
-        yield env.timeout(5) # need 5 minutes to fuel the tank
-        
-        #process data
-        yield env.timeout(5) # need 5 minutes to fuel the tank
-
-        # write data 
-        yield gas_station.gas_tank.get(40)
-        print(f'Car name done refueling at {env.now}')
 

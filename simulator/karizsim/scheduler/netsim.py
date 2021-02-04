@@ -191,27 +191,33 @@ class NetworkInterface(object):
             size of packet in byte, default is 1024 bytes
 
     """
-    def __init__(self, env, name, ip, rate, packet_size=1024, debug=False):
+    # FIXME this should split according to the flow id
+    def __init__(self, env, name, ip, rate, flows, gateway, packet_size=1024, debug=False):
         self.out_store = simpy.Store(env)
+        self.in_store = simpy.Store(env)
         self.rate = rate
         self.env = env
         self.name = name
         self.ip = ip
-        self.out = None
+        self.gateway = gateway
+        self.n_flows = flows
+        self.out_ports = [None for i in range(flows)]
+        self.out_port = None
+        self.in_port = None
         self.packets_rec = 0
         self.packets_drop = 0
         self.packet_size = packet_size
         self.debug = debug
         self.busy = 0  # Used to track if a packet is currently being sent
-        self.send_action = env.process(self.sender())  # starts the run() method as a SimPy process
-        self.recv_action = env.process(self.reciever())  # starts the run() method as a SimPy process
+        self.send_action = env.process(self.send())  # starts the run() method as a SimPy process
+        self.recv_action = env.process(self.receive())  # starts the run() method as a SimPy process
 
-    def receiver(self):
+    def receive(self):
         while True:
             msg = (yield self.in_store.get()) 
 
 
-    def sender(self):
+    def send(self):
         while True:
             msg = (yield self.out_store.get()) 
             self.busy = 1
@@ -222,14 +228,14 @@ class NetworkInterface(object):
             if self.debug:
                 print(msg)
 
+
     def put(self, req):
-        packets_count = math.ceil(req.size/self.packet_size) or 1
-        for i in range(packets_count):
-            packet_size = self.packet_size if req.size > (i + 1)*self.packet_size else req.size - i*self.packet_size
-            pkt = Packet(src=self.ip, dst=req.dest, flow_id=req.flow_id, seq_no=i, last_seq=packets_count - 1, size=packet_size)
-            self.packets_rec += 1
-            tmp_byte_count = self.byte_size + pkt.size
-            return self.out_store.put(pkt)
+        if req.dst == self.ip:
+            self.packet_rcv += 1
+            return self.in_store.put(pkt)
+        self.packets_rec += 1
+        tmp_byte_count = self.byte_size + req.size
+        return self.out_store.put(pkt)
     
 
 
@@ -341,31 +347,40 @@ class Router(object):
         rate : int
             the defaul rate for the output ports default is 1 kbps
     """
-    def __init__(self, env, ports=1, rate=1024, ip='127.0.0.1'): 
+    def __init__(self, env, name, ports=1, rate=1024, ip='127.0.0.1', gateway='0.0.0.0'): 
         self.env = env
         self.ip = ip
+        self.gateway = gateway
+        self.name = name
         self.rack = int(ip.split('.')[1])
         self.n_ports = ports
         self.port_rate = rate
-        self.ports = [SwitchPort(env, self.port_rate) for i in range(self.n_ports)]  # Create and initialize output ports
+        self.free_ports = [SwitchPort(env, self.port_rate) for i in range(self.n_ports)]  # Create and initialize output ports
         self.packets_rec = 0
         self.route_table = {}
 
     def connect(self, sink, gateway=False):
-        if not self.ports:
+        if not self.free_ports:
             raise NameError('The switch is fully connect. Redesign your topology')
-        sink.out = self.ports.pop()
-        self.route_table[sink.ip] = sink.out
+        port = self.free_ports.pop()
+        port.out = sink
+        self.route_table[sink.ip] = port
         if gateway:
-            self.route_table['gateway'] = sink.out
+            self.route_table['gateway'] = port
         return
 
-    def add_route(self, sink):
+    def add_route(self, ip):
+        ''' Currently I wan to set up a static route '''
+        domain = ip.rsplit('.')[0]
+        self.route_table[domain] = self.route_table[ip]
         pass
 
     def route(self, pkt):
         if pkt.dst in route_table:
             return self.route_table[pkt.dst]
+        domain = pkt.dst.rsplit('.')[0]
+        if domain in self.route_table:
+            return self.route_table[domain]
         return self.route_table['gateway']
 
 
@@ -373,8 +388,7 @@ class Router(object):
         self.packets_rec += 1
         # you should implement your routing algorithm here
         dest = route(pkt)
-        self.ports[dest].put(pkt)
-        return
+        return self.ports[dest].put(pkt)
 
 
 

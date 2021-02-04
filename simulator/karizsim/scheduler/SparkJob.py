@@ -3,38 +3,30 @@ import random
 
 
 class Task:
-    def __init__(self, env):
+    def __init__(self, env, id):
         self.type = 'Map'
+        self.inputs = [{'name': , 'size': , 'fetch': env.event()}]
+        self.id = id
         self.env = env
-
-    def execute(self):
-        print(f'Car {self.prev_worker} starts refueling at {env.now}')
-        # read data
-        yield env.timeout(5) # need 5 minutes to fuel the tank
-
-        #process data
-        yield env.timeout(5) # need 5 minutes to fuel the tank
-
-        # write data
-        yield env.timeout(40)
-        print(f'Car name done refueling at {env.now}')
-
-
+        self.completion_event = env.event()
 
 
 class Stage:
     def __init__(self, env):
         self.env = env
         self.n_tasks = 5# random.randint(1, 10) # FIXME
-        self.tasks = [Task(env) for t in range(self.n_tasks)]
+        self.tasks = [Task(env, t) for t in range(self.n_tasks)]
 
-    def execute(self, env):
-        # choose workers 
-        pass 
 
 
 class Job:
     def __init__(self, env):
         self.env = env
-        self.Stage = {'0': Stage(env)}
+        self.stages = {'0': Stage(env)}
         self.dependencies = {}
+
+    def get_ready_stages(self):
+        return self.stages
+
+    def get_ready_tasks(self):
+        return self.stages['0'].tasks

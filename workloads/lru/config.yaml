@@ -1,0 +1,12 @@
+workload: 
+   interarrival: 1s 
+   duration: 90m
+   type: cache
+   output: workload1.128.gen
+   cache:
+      policy: lru
+      size: 3g # either size in bytes or in GB or MB 
+      hit.ratio: 0 # in percent
+      object.size: 
+          type: fixed
+          size: 4M
